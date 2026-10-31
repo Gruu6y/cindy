@@ -9,7 +9,7 @@ import { CINDY_SUBAGENT_EXTENSION_SOURCE } from '../cindy-subagent-source.js';
 
 // Execute the exact staged extension, including its filesystem mailbox and
 // lifecycle handlers. Export helpers only in this test's in-memory module.
-const compiled = ts.transpileModule(CINDY_SUBAGENT_EXTENSION_SOURCE + '\nexport { parentContextSnapshot, createResultDelivery, resolveTaskModelRoutes, normalizeInvocation, modelProviderMap, singleTaskDisplayModel };', {
+const compiled = ts.transpileModule(CINDY_SUBAGENT_EXTENSION_SOURCE + '\nexport { parentContextSnapshot, createResultDelivery, resolveTaskModelRoutes, normalizeInvocation, modelProviderMap, singleTaskDisplayModel, stageInjectedExtensions };', {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
 }).outputText;
 const nativeRequire = createRequire(import.meta.url);
@@ -446,5 +446,45 @@ describe('Pi subagent provider selection', () => {
     const f = await fixture();
     expect(f.tool.parameters.properties.provider.type).toBe('string');
     expect(f.tool.parameters.properties.tasks.items.properties.provider.type).toBe('string');
+  });
+
+  it('stages host-allowed child extensions into the run directory in order', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'pi-injected-'));
+    roots.push(root);
+    const configHome = path.join(root, 'config-home');
+    const internal = path.join(configHome, 'internal-extensions');
+    const runDir = path.join(root, 'run');
+    await mkdir(internal, { recursive: true });
+    await mkdir(runDir, { recursive: true });
+    await writeFile(path.join(internal, 'a.ts'), 'export default 1;\n');
+    await writeFile(path.join(internal, 'b.ts'), 'export default 2;\n');
+    // Empty allow list is the default and stages nothing.
+    expect(extension.stageInjectedExtensions(configHome, runDir, [])).toEqual([]);
+    expect(extension.stageInjectedExtensions(configHome, runDir, ['a.ts', 'b.ts'])).toEqual([
+      path.join(runDir, 'a.ts'),
+      path.join(runDir, 'b.ts'),
+    ]);
+    expect(await readFile(path.join(runDir, 'a.ts'), 'utf8')).toContain('export default 1;');
+    expect(await readFile(path.join(runDir, 'b.ts'), 'utf8')).toContain('export default 2;');
+  });
+
+  it('fail-closes on a malformed host allow list instead of launching without it', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'pi-injected-bad-'));
+    roots.push(root);
+    const configHome = path.join(root, 'config-home');
+    const internal = path.join(configHome, 'internal-extensions');
+    const runDir = path.join(root, 'run');
+    await mkdir(internal, { recursive: true });
+    await mkdir(runDir, { recursive: true });
+    await writeFile(path.join(internal, 'a.ts'), 'export default 1;\n');
+    const stage = extension.stageInjectedExtensions;
+    // A traversal / non-string entry can never resolve to a staged file.
+    expect(() => stage(configHome, runDir, ['../a.ts'])).toThrow(/plain file name/);
+    expect(() => stage(configHome, runDir, [123])).toThrow(/plain file name/);
+    // The bridge is always loaded; listing it again would double-register.
+    expect(() => stage(configHome, runDir, ['cindy-bridge.ts'])).toThrow(/duplicates the bridge/);
+    expect(() => stage(configHome, runDir, ['a.ts', 'a.ts'])).toThrow(/listed twice/);
+    // A host that asked for an extension must not get a child without it.
+    expect(() => stage(configHome, runDir, ['missing.ts'])).toThrow(/is missing/);
   });
 });

@@ -13,6 +13,7 @@ import {
   CINDY_SUBAGENT_PARENT_PID_ENV,
   CINDY_SUBAGENT_RUNNER_CONTROL_TITLE,
   CINDY_SUBAGENT_TOOL_NAME,
+  PI_SUBAGENT_INJECTED_EXTENSION_FILENAMES,
 } from '../cindy-subagent-source.js';
 import { CINDY_BRIDGE_EXTENSION_SOURCE } from '../cindy-bridge-source.js';
 import { CINDY_SUBAGENT_RUNNER_SOURCE } from '../cindy-subagent-runner-source.js';
@@ -149,6 +150,43 @@ describe('cindy-subagent extension source', () => {
     );
     expect(CINDY_SUBAGENT_EXTENSION_SOURCE).toContain('copyManagedRipgrep(configHome, childConfigHome)');
     expect(CINDY_SUBAGENT_EXTENSION_SOURCE).toContain('childConfigHome: childConfigHome');
+  });
+
+  it('keeps the child extension allow list host-owned and empty by default', () => {
+    // #8279 taught the runner to append each `extensionPaths` entry after the
+    // bridge; this pins the host half. An empty allow list must leave config.json
+    // without the field so every existing run's argv stays byte for byte the
+    // same, and the list must never be populated from untrusted text.
+    expect(PI_SUBAGENT_INJECTED_EXTENSION_FILENAMES).toEqual([]);
+    const src = CINDY_SUBAGENT_EXTENSION_SOURCE;
+    expect(src).toContain(
+      'const INJECTED_EXTENSION_FILENAMES = ' + JSON.stringify(PI_SUBAGENT_INJECTED_EXTENSION_FILENAMES) + ';',
+    );
+    expect(src).toContain('function stageInjectedExtensions(configHome, runDir, filenames)');
+    expect(src).toContain(
+      'if (injectedExtensions.length > 0) config.extensionPaths = injectedExtensions;',
+    );
+    // The staged copies must exist before the config that names them is written.
+    const stage = src.indexOf('stageInjectedExtensions(configHome, runDir, INJECTED_EXTENSION_FILENAMES)');
+    const publish = src.indexOf('writePrivateJson(configPath, config)', stage);
+    expect(stage).toBeGreaterThan(-1);
+    expect(publish).toBeGreaterThan(stage);
+    // Untrusted text can never add to the allow list.
+    expect(src).not.toContain('task.extensionPaths');
+    expect(src).not.toContain('profilePrompt.extensionPaths');
+    expect(src).not.toContain('INJECTED_EXTENSION_FILENAMES.push');
+  });
+
+  it('never carries injected extension paths into a resumed run', () => {
+    const source = readFileSync(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), '../pi-subagent-runs.ts'),
+      'utf8',
+    );
+    // Resume builds a new runDir with no staged copies, so an inherited path
+    // would be stale; a non-empty host list must fail closed rather than launch
+    // a child without the extension the host asked for.
+    expect(source).toContain('extensionPaths: undefined,');
+    expect(source).toContain('PI_SUBAGENT_INJECTED_EXTENSION_FILENAMES.length > 0');
   });
 
   it('persists a terminal failure if the host rejects the runner launch', () => {

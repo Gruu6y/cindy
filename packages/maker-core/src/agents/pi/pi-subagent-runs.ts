@@ -21,6 +21,8 @@ import type {
   SubagentTranscriptPageResponse,
 } from '@cindy/maker-shared/subagent-workspace';
 
+import { PI_SUBAGENT_INJECTED_EXTENSION_FILENAMES } from './cindy-subagent-source.js';
+
 const RUN_DIR_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const MAX_STATUS_BYTES = 2 * 1024 * 1024;
 const MAX_TRANSCRIPT_BYTES = 50 * 1024 * 1024 + 4096;
@@ -2254,6 +2256,12 @@ interface ResumeRunnerConfig {
   context?: string;
   title?: string;
   description?: string;
+  /**
+   * Host-owned allow list of extra child extensions, staged by the launcher
+   * into the run directory. Written only by the host; never read from a task
+   * or child output. Optional and absent by default.
+   */
+  extensionPaths?: string[];
   concurrency?: number;
   timeoutMs?: number;
   tasks: Array<{
@@ -2747,6 +2755,14 @@ async function resumeClaimedPiSubagentRun(
   }
   const runId = randomUUID();
   const runDir = path.join(root, runId);
+  // A resumed run gets a brand new runDir with no staged copies, and the
+  // parent's ephemeral configHome is long gone, so the source generation's
+  // injected extension paths cannot be re-derived here. Refuse rather than
+  // publish a child that silently starts without an extension the host asked
+  // for. Empty (the default) makes this a no-op.
+  if (PI_SUBAGENT_INJECTED_EXTENSION_FILENAMES.length > 0) {
+    throw new Error('PI Subagent resume cannot carry host-injected extensions');
+  }
   const childConfigHome = path.join(runDir, 'pi-home');
   const bridgeExtension = path.join(runDir, 'cindy-bridge.ts');
   const permissionFile = path.join(runDir, 'permission.json');
@@ -2758,6 +2774,10 @@ async function resumeClaimedPiSubagentRun(
     childConfigHome,
     bridgeExtension,
     permissionFile,
+    // Never inherit the source generation's injected extension paths: they
+    // point at a runDir this run does not have. Injection is a launch-time
+    // host decision (guarded above); a resumed run starts without it.
+    extensionPaths: undefined,
     // Keep the original title: the sidebar renders it verbatim, so an English
     // prefix would leak into zh/ja/ko. Continuation is already the same logical
     // run (same taskId); untitled stays untitled.
